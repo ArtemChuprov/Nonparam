@@ -1,0 +1,9 @@
+[project]
+name = "nonparam"
+version = "0.2.0"
+description = "Minimal bilayer cross demo"
+requires-python = ">=3.10"
+dependencies = ["jax", "jax-md", "numpy", "ase"]
+
+[tool.setuptools]
+py-modules = ["bilayer_cross", "boundary", "constants", "energy", "simulation", "structure"]
