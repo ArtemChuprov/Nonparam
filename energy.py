@@ -7,8 +7,19 @@ import jax.numpy as jnp
 import numpy as np
 from jax_md import partition, smap, space
 
-from boundary import find_robust_basis, sphere_mask, unpack_sphere
-from constants import EPS, NBR_CUT, R_CUT, SCALE_A_CG, SCALE_B_CG, SIG, S_RATIO, TYPE_AA, TYPE_CG
+from boundary import basis_from_cg, find_robust_basis, sphere_mask, unpack_sphere
+from constants import (
+    EPS,
+    NBR_CUT,
+    R_CUT_AA,
+    R_CUT_CG,
+    SCALE_A_CG,
+    SCALE_B_CG,
+    SIG,
+    S_RATIO,
+    TYPE_AA,
+    TYPE_CG,
+)
 
 jax.config.update("jax_enable_x64", True)
 
@@ -61,8 +72,17 @@ scaled_lj_pair = scale_wrapper(lj_pair)
 
 
 def pair_scaled_lj(dr, sigma, epsilon, r_cutoff, A, B):
-    # Backward-compatible name; actual wrapper is generic above.
+    # r_cutoff is on effective distance B*d; species matrix built in build_hybrid_energy.
     return scaled_lj_pair(dr, sigma=sigma, epsilon=epsilon, r_cutoff=r_cutoff, A=A, B=B)
+
+
+def species_cutoff_matrix() -> jnp.ndarray:
+    """Per-species cutoff on B*d: AA=5 Å, CG physical 10 Å -> B*d cutoff 5."""
+    return (
+        jnp.zeros((3, 3))
+        .at[1, 1].set(R_CUT_AA)
+        .at[2, 2].set(R_CUT_CG * SCALE_B_CG)
+    )
 
 
 @dataclass
@@ -81,9 +101,9 @@ def pack_fine_indices(pos: np.ndarray, types: np.ndarray, center_i: int, r_cut: 
     t2, t1 = sp[st == TYPE_CG], sp[st == TYPE_AA]
     g_idx = np.where(m)[0]
     t1_g = g_idx[st == TYPE_AA]
-    if len(t2) < 3:
+    M = basis_from_cg(t2, pos[center_i])
+    if M is None:
         return ()
-    M = find_robust_basis(t2 - pos[center_i])
     Mb = M / S_RATIO
     Mi = np.linalg.inv(Mb)
     coords = (t1 - pos[center_i]) @ Mi.T
@@ -146,14 +166,17 @@ def cross_energy(R: jnp.ndarray, displacement, topo: CrossTopology) -> jnp.ndarr
             ph = rc + jnp.asarray(off)
             dr = displacement(rc, ph)
             d = space.distance(dr)
-            e = e + jnp.where((d > 1e-8) & (d < R_CUT), lj_radial(d), 0.0)
+            e = e + jnp.where((d > 1e-8) & (d < R_CUT_AA), lj_radial(d), 0.0)
     for i, fine_idx in zip(topo.pack_centers, topo.pack_fine):
         rc = R[i]
         for j in fine_idx:
             dr = displacement(rc, R[j])
             e = e + jnp.where(
                 space.distance(dr) > 1e-8,
-                scaled_lj_pair(dr, sigma=SIG, epsilon=EPS, r_cutoff=R_CUT, A=SCALE_A_CG, B=SCALE_B_CG),
+                scaled_lj_pair(
+                    dr, sigma=SIG, epsilon=EPS,
+                    r_cutoff=R_CUT_CG * SCALE_B_CG, A=SCALE_A_CG, B=SCALE_B_CG,
+                ),
                 0.0,
             )
     return e
@@ -166,9 +189,10 @@ def build_hybrid_energy(displacement, box, types: jnp.ndarray, topo: CrossTopolo
     nbr_fn = partition.neighbor_list(
         displacement, box, NBR_CUT, dr_threshold=0.25, fractional_coordinates=False
     )
+    r_cutoff = species_cutoff_matrix()
     e_homog = smap.pair_neighbor_list(
         pair_scaled_lj, displacement, species=species,
-        sigma=SIG, epsilon=EPS, r_cutoff=R_CUT, A=A, B=B,
+        sigma=SIG, epsilon=EPS, r_cutoff=r_cutoff, A=A, B=B,
     )
 
     def energy_fn(R, neighbor):

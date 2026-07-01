@@ -49,6 +49,40 @@ def find_robust_basis(vectors: np.ndarray, cos_threshold: float = 0.8) -> np.nda
     return m
 
 
+def basis_from_cg(t2: np.ndarray, center: np.ndarray) -> np.ndarray | None:
+    """Lattice basis from CG positions; works with 1+ CG (no hard minimum of 3)."""
+    vecs = t2 - center
+    if len(vecs) >= 3:
+        return find_robust_basis(vecs)
+    if len(vecs) == 2:
+        b1, b2 = vecs[0], vecs[1]
+        b3 = np.cross(b1, b2)
+        if np.linalg.norm(b3) < 1e-5:
+            aux = np.array([0.0, 0.0, 1.0])
+            if abs(float(np.dot(b1 / (np.linalg.norm(b1) + 1e-12), aux))) > 0.9:
+                aux = np.array([1.0, 0.0, 0.0])
+            b3 = np.cross(b1, aux)
+        scale = 0.5 * (np.linalg.norm(b1) + np.linalg.norm(b2))
+        b3 = b3 / (np.linalg.norm(b3) + 1e-12) * scale
+        return find_robust_basis(np.vstack([b1, b2, b3]))
+    if len(vecs) == 1:
+        b1 = vecs[0]
+        ln = max(float(np.linalg.norm(b1)), 1e-3)
+        b1n = b1 / ln
+        aux = np.array([0.0, 0.0, 1.0])
+        if abs(float(np.dot(b1n, aux))) > 0.9:
+            aux = np.array([1.0, 0.0, 0.0])
+        b2 = np.cross(b1n, aux)
+        b2 = b2 / (np.linalg.norm(b2) + 1e-12) * ln
+        b3 = np.cross(b1n, b2)
+        b3 = b3 / (np.linalg.norm(b3) + 1e-12) * ln
+        m = np.column_stack([b1, b2, b3])
+        if np.linalg.det(m) < 0:
+            m[:, [1, 2]] = m[:, [2, 1]]
+        return m
+    return None
+
+
 def lattice_offsets_fcc(max_index: int = 2) -> np.ndarray:
     cands = np.array(list(itertools.product(range(-max_index, max_index + 1), repeat=3)), dtype=int)
     mask = np.any(cands != 0, axis=1) & (cands.sum(axis=1) % 2 == 0)
@@ -82,10 +116,13 @@ def unpack_sphere(
 
     t2 = sphere_pos[sphere_types == TYPE_CG]
     t1 = sphere_pos[sphere_types == TYPE_AA]
-    if len(t2) < 3:
-        return np.vstack([t1, t2]), np.concatenate([np.full(len(t1), TYPE_AA), np.full(len(t2), TYPE_CG)]), center
+    M = basis_from_cg(t2, center)
+    if M is None:
+        parts = [p for p in (t1, t2) if len(p)]
+        out_pos = np.vstack(parts) if parts else np.empty((0, 3))
+        out_types = np.array([TYPE_AA] * len(t1) + [TYPE_CG] * len(t2), dtype=int)
+        return out_pos, out_types, center
 
-    M = find_robust_basis(t2 - center)
     M_base = M / S_RATIO
     M_inv = np.linalg.inv(M_base)
     t2_lat = center + np.round((t2 - center) @ M_inv.T).astype(int) @ M_base.T
@@ -121,10 +158,13 @@ def pack_sphere(
     t2 = sphere_pos[sphere_types == TYPE_CG]
     t1 = sphere_pos[sphere_types == TYPE_AA]
 
-    if len(t2) < 3:
-        return np.vstack([t2, t1]), np.array([TYPE_CG] * len(t2) + [TYPE_AA] * len(t1)), center
+    M = basis_from_cg(t2, center)
+    if M is None:
+        parts = [p for p in (t2, t1) if len(p)]
+        out_pos = np.vstack(parts) if parts else np.empty((0, 3))
+        out_types = np.array([TYPE_CG] * len(t2) + [TYPE_AA] * len(t1), dtype=int)
+        return out_pos, out_types, center
 
-    M = find_robust_basis(t2 - center)
     M_base = M / S_RATIO
     M_inv = np.linalg.inv(M_base)
     coords = (t1 - center) @ M_inv.T

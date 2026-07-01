@@ -42,6 +42,17 @@ VS Code debug: F5 → **bilayer_cross**.
 - `neighbors_before.txt`, `neighbors_after.txt`
 - `6_after_jax_step.xyz`
 
+## Cutoffs по типам
+
+В `constants.py`:
+
+- `R_CUT_AA = 5` Å — fine (type 1)
+- `R_CUT_CG = 10` Å — coarse (type 2), physical
+- `NBR_CUT = max(R_CUT_AA, R_CUT_CG)` — радиус neighbor list
+
+В `energy.py` матрица `species_cutoff_matrix()` задаёт cutoff на эффективном расстоянии `B*d`:
+AA-AA → 5, CG-CG → `10 * 0.5 = 5` (это physical 10 Å при `B=0.5`).
+
 ## scale_wrapper
 
 `scale_wrapper` теперь не привязан к LJ. Это общий декоратор pair-potential:
